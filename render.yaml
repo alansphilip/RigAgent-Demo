@@ -8,13 +8,13 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
-      - key: OPENAI_API_KEY
-        value: optional
       - key: DATABASE_URL
         value: sqlite:///./rig_query.db
-      - key: FAISS_INDEX_PATH
-        value: ./faiss_index
       - key: PDF_OUTPUT_DIR
         value: ./generated_pdfs
       - key: CORS_ORIGINS
         value: "*"
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false

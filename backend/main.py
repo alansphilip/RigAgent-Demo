@@ -57,46 +57,87 @@ app.mount("/pdfs", StaticFiles(directory=PDF_OUTPUT_DIR), name="pdfs")
 # ─────────────────────────────────────────────────────────────
 
 class LLMClient:
-    """Abstracted LLM client - swap provider by changing env vars."""
-    
+    """
+    Abstracted LLM client.
+    Supports:
+      - Google Gemini (GEMINI_API_KEY)   ← free tier, recommended for demo
+      - OpenAI / compatible (OPENAI_API_KEY)
+    Falls back to smart structured responses when no key is set.
+    """
+
     def __init__(self):
-        self.api_key = os.getenv("OPENAI_API_KEY", "")
-        self.base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-        self.model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-        self.client = None
-        
-        if self.api_key and self.api_key != "your_openai_api_key_here":
+        self.gemini_key = os.getenv("GEMINI_API_KEY", "")
+        self.openai_key = os.getenv("OPENAI_API_KEY", "")
+        self.openai_base = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+        self.openai_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        self.gemini_model = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+        self._gemini = None
+        self._openai = None
+        self.provider = "none"
+
+        # Prefer Gemini (free tier)
+        if self.gemini_key and self.gemini_key not in ("", "your_gemini_api_key_here"):
+            try:
+                import google.generativeai as genai
+                genai.configure(api_key=self.gemini_key)
+                self._gemini = genai.GenerativeModel(
+                    model_name=self.gemini_model,
+                    system_instruction=SYSTEM_PROMPT,
+                )
+                self.provider = "gemini"
+                print(f"LLM: Using Google Gemini ({self.gemini_model})")
+            except Exception as e:
+                print(f"Gemini init warning: {e}")
+
+        # Fallback to OpenAI
+        if self.provider == "none" and self.openai_key and self.openai_key not in ("", "your_openai_api_key_here"):
             try:
                 from openai import OpenAI
-                self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+                self._openai = OpenAI(api_key=self.openai_key, base_url=self.openai_base)
+                self.provider = "openai"
+                print(f"LLM: Using OpenAI ({self.openai_model})")
             except Exception as e:
-                print(f"LLM client init warning: {e}")
-    
+                print(f"OpenAI init warning: {e}")
+
+        if self.provider == "none":
+            print("LLM: No API key configured — using smart structured responses.")
+
+    @property
+    def client(self):
+        """Compatibility shim — True if any LLM is available."""
+        return self._gemini or self._openai
+
     def generate(self, system_prompt: str, user_message: str, context: str = "") -> str:
         """Generate a response using the configured LLM."""
-        if not self.client:
-            return self._fallback_response(context, user_message)
-        
-        try:
-            messages = [
-                {"role": "system", "content": system_prompt},
-            ]
-            if context:
-                messages.append({"role": "user", "content": f"Context:\n{context}\n\nQuestion: {user_message}"})
-            else:
-                messages.append({"role": "user", "content": user_message})
-            
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=0.3,
-                max_tokens=1024,
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            print(f"LLM generation error: {e}")
-            return self._fallback_response(context, user_message)
-    
+        full_user = f"Context:\n{context}\n\nQuestion: {user_message}" if context else user_message
+
+        if self._gemini:
+            try:
+                resp = self._gemini.generate_content(full_user)
+                return resp.text
+            except Exception as e:
+                print(f"Gemini generation error: {e}")
+                return self._fallback_response(context, user_message)
+
+        if self._openai:
+            try:
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": full_user},
+                ]
+                response = self._openai.chat.completions.create(
+                    model=self.openai_model,
+                    messages=messages,
+                    temperature=0.3,
+                    max_tokens=1024,
+                )
+                return response.choices[0].message.content
+            except Exception as e:
+                print(f"OpenAI generation error: {e}")
+                return self._fallback_response(context, user_message)
+
+        return self._fallback_response(context, user_message)
+
     def _fallback_response(self, context: str, query: str) -> str:
         """Return structured context when LLM is unavailable."""
         if context:
@@ -572,11 +613,11 @@ async def get_rig_data():
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize database and RAG index on startup."""
+    """Initialize database and TF-IDF RAG index on startup."""
     print("RIG Query Agent starting up...")
     create_tables()
-    
-    # Check if DB has data, if not seed it
+
+    # Check if DB has data; if not, seed it
     from database import SessionLocal, WorkPack
     db = SessionLocal()
     try:
@@ -588,19 +629,16 @@ async def startup_event():
             subprocess.run([sys.executable, "setup_db.py"], check=True)
     finally:
         db.close()
-    
-    # Build RAG index if not exists
-    from rag import load_index, build_rag_from_db
-    import os
-    index_file = os.path.join(os.getenv("FAISS_INDEX_PATH", "./faiss_index"), "equipment.index")
-    if not os.path.exists(index_file):
-        print("Building FAISS RAG index...")
-        try:
-            build_rag_from_db()
-        except Exception as e:
-            print(f"RAG index build warning: {e}")
-    
-    print("RIG Query Agent ready!")
+
+    # Build lightweight TF-IDF RAG index from DB
+    try:
+        from rag import build_rag_from_db
+        print("Building TF-IDF RAG index...")
+        build_rag_from_db()
+    except Exception as e:
+        print(f"RAG index build warning: {e}")
+
+    print(f"RIG Query Agent ready! LLM provider: {llm.provider}")
 
 
 @app.get("/")
