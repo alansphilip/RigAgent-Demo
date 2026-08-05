@@ -1,0 +1,29 @@
+# Python / Virtual Environment
+backend/venv/
+backend/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Databases & Vector Index
+backend/*.db
+backend/*.sqlite3
+backend/faiss_index/
+backend/generated_pdfs/
+
+# Environment variables
+.env
+*.env
+!.env.example
+backend/.env
+frontend/.env
+
+# Node.js / Vite / React
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+*.local
+.vscode/
+.idea/
+.DS_Store
