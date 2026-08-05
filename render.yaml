@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: rig-query-backend
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt && python setup_db.py
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: OPENAI_API_KEY
+        value: optional
+      - key: DATABASE_URL
+        value: sqlite:///./rig_query.db
+      - key: FAISS_INDEX_PATH
+        value: ./faiss_index
+      - key: PDF_OUTPUT_DIR
+        value: ./generated_pdfs
+      - key: CORS_ORIGINS
+        value: "*"
