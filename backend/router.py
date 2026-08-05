@@ -4,7 +4,27 @@ Determines which tool to invoke based on the user's query.
 """
 import re
 
-# Intent keyword mappings
+
+# ─────────────────────────────────────────────────────────────
+# Explicit greeting words checked FIRST before anything else
+# ─────────────────────────────────────────────────────────────
+GREETING_WORDS = {"hi", "hello", "hey", "hola", "yo", "howdy", "greetings", "sup"}
+
+GREETING_PHRASES = [
+    r"^(good\s*(morning|afternoon|evening|day))",
+    r"who are you",
+    r"what can you do",
+    r"what are you",
+    r"how can you help",
+    r"what is this (app|tool|system|agent)",
+    r"^help$",       # only standalone "help"
+    r"^start$",
+    r"^menu$",
+]
+
+# ─────────────────────────────────────────────────────────────
+# Intent patterns (order matters — specific before generic)
+# ─────────────────────────────────────────────────────────────
 INTENT_PATTERNS = {
     "checklist_pdf": [
         r"download",
@@ -32,75 +52,77 @@ INTENT_PATTERNS = {
         r"last shift",
         r"night shift",
         r"morning shift",
+        r"afternoon shift",
         r"who.*on duty",
         r"operator.*shift",
-        r"shift",
+        r"\bshift\b",
     ],
     "procedure": [
         r"procedure[s]?",
-        r"p\d{3}",
+        r"\bp\d{3}\b",
         r"pending.*procedure",
         r"completed.*procedure",
         r"procedure.*status",
         r"show.*procedure",
+        r"in progress.*procedure",
     ],
     "work_pack": [
-        r"work pack[s]?",
-        r"wp\d+",
+        r"work\s*pack[s]?",
+        r"\bwp\d+\b",
         r"active.*pack",
         r"pack.*active",
         r"how many.*pack",
         r"list.*pack",
         r"pack.*status",
-    ],
-    "greeting": [
-        r"^\s*(hi|hello|hey|greetings|good\s*(morning|afternoon|evening)|hola|yo|howdy)\b",
-        r"who are you",
-        r"what can you do",
-        r"help",
-        r"start",
-        r"menu",
-        r"what is this",
+        r"maintenance.*pack",
     ],
     "equipment": [
-        r"what is",
-        r"explain",
-        r"how does",
-        r"what does",
-        r"describe",
-        r"tell me about",
-        r"mud pump",
-        r"blowout preventer",
-        r"bop",
-        r"top drive",
-        r"rotary table",
-        r"drill pipe",
-        r"choke manifold",
-        r"mud motor",
-        r"draw works",
-        r"kelly",
-        r"hook",
-        r"swivel",
-        r"accumulator",
-        r"shale shaker",
-        r"degasser",
-        r"desander",
-        r"desilter",
-        r"standpipe",
-        r"heave compensator",
-        r"iron roughneck",
-        r"riser",
-        r"catwalk",
-        r"cementing",
-        r"wireline",
-        r"wellhead",
-        r"christmas tree",
-        r"equipment",
-        r"manual",
-        r"specification",
-        r"specs",
-        r"operate",
-        r"purpose of",
+        r"\bwhat is\b",
+        r"\bexplain\b",
+        r"\bhow does\b",
+        r"\bhow do\b",
+        r"\bwhat does\b",
+        r"\bdescribe\b",
+        r"\btell me about\b",
+        r"\bpurpose of\b",
+        r"\bspecification[s]?\b",
+        r"\bspecs?\b",
+        r"\boperate[s]?\b",
+        r"\boperation of\b",
+        r"\bmanual\b",
+        r"\bmud pump\b",
+        r"\bblowout preventer\b",
+        r"\bbop\b",
+        r"\btop drive\b",
+        r"\brotary table\b",
+        r"\bdrill pipe\b",
+        r"\bchoke manifold\b",
+        r"\bmud motor\b",
+        r"\bdraw works\b",
+        r"\bkelly\b",
+        r"\bhook\b",
+        r"\bswivel\b",
+        r"\baccumulator\b",
+        r"\bshale shaker\b",
+        r"\bdegasser\b",
+        r"\bdesander\b",
+        r"\bdesilter\b",
+        r"\bstandpipe\b",
+        r"\bheave compensator\b",
+        r"\biron roughneck\b",
+        r"\briser\b",
+        r"\bcatwalk\b",
+        r"\bcementing\b",
+        r"\bwireline\b",
+        r"\bwellhead\b",
+        r"\bchristmas tree\b",
+        r"\bsubsea\b",
+        r"\bmux pod\b",
+        r"\bdynamic positioning\b",
+        r"\b\bdp system\b",
+        r"\bmpd\b",
+        r"\bmanaged pressure\b",
+        r"\bequipment\b",
     ],
 }
 
@@ -108,34 +130,46 @@ INTENT_PATTERNS = {
 def route_query(user_query: str) -> str:
     """
     Determine the intent of the user query and return the appropriate tool name.
-    
-    Returns one of: 'checklist_pdf', 'checklist_search', 'shift',
-                    'procedure', 'work_pack', 'equipment', 'greeting', 'general'
+
+    Returns one of:
+        'checklist_pdf', 'checklist_search', 'shift', 'procedure',
+        'work_pack', 'equipment', 'greeting', 'general'
     """
     query_lower = user_query.lower().strip()
-    
-    # Score each intent
+    words = set(query_lower.split())
+
+    # ── 1. Greeting — check FIRST before any other matching ──────────────
+    # Direct single/few word greeting
+    if words & GREETING_WORDS and len(words) <= 4:
+        return "greeting"
+
+    # Greeting phrases
+    for pattern in GREETING_PHRASES:
+        if re.search(pattern, query_lower):
+            return "greeting"
+
+    # ── 2. Score remaining intents ────────────────────────────────────────
     scores = {intent: 0 for intent in INTENT_PATTERNS}
-    
+
     for intent, patterns in INTENT_PATTERNS.items():
         for pattern in patterns:
             if re.search(pattern, query_lower):
                 scores[intent] += 1
-    
-    # Check greeting first if explicit greeting match
-    if scores["greeting"] > 0 and max(scores.values()) == scores["greeting"]:
-        return "greeting"
-    
-    # Return highest scoring intent (with priority ordering for ties)
-    priority_order = ["checklist_pdf", "checklist_search", "shift", "procedure", "work_pack", "equipment", "greeting"]
-    
+
+    # Priority order for tie-breaking
+    priority_order = [
+        "checklist_pdf",
+        "checklist_search",
+        "shift",
+        "procedure",
+        "work_pack",
+        "equipment",
+    ]
+
     best_intent = max(priority_order, key=lambda i: scores[i])
-    
-    # If no specific intent matched:
+
+    # ── 3. No intent matched → general ────────────────────────────────────
     if scores[best_intent] == 0:
-        # Check if short message looks like a greeting or generic phrase
-        if len(query_lower.split()) <= 3 and any(w in query_lower for w in ["hi", "hello", "hey", "help", "who"]):
-            return "greeting"
         return "general"
-    
+
     return best_intent
