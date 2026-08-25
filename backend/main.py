@@ -5,10 +5,11 @@ Main application entry point.
 import os
 import json
 import time
+import asyncio
 from typing import Optional
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from dotenv import load_dotenv
@@ -622,138 +623,136 @@ async def get_rig_data():
 # STREAMING QUERY ENDPOINT  (Server-Sent Events)
 # ─────────────────────────────────────────────────────────────
 
-from fastapi.responses import StreamingResponse as FastAPIStream
-import asyncio
-
-async def stream_llm_response(user_query: str, db):
+async def stream_llm_response(user_query: str):
     """
-    Generator that streams the LLM response token by token using SSE format.
-    Falls back to a single chunk if no LLM or for structured DB responses.
+    Async generator that streams the LLM response word-by-word using SSE.
+    Creates its own DB session to avoid FastAPI session lifecycle issues.
     """
-    intent = route_query(user_query)
+    from database import SessionLocal
+    db = SessionLocal()
+    intent = "general"
 
-    # For structured DB intents, generate the full answer then stream it in chunks
-    async def stream_text(text: str):
+    async def stream_text(text: str, tool: str):
         words = text.split(" ")
         chunk = ""
         for i, word in enumerate(words):
             chunk += word + " "
-            # Send every 3 words as a chunk for smooth streaming
             if (i + 1) % 3 == 0 or i == len(words) - 1:
                 yield f"data: {json.dumps({'token': chunk, 'done': False})}\n\n"
                 chunk = ""
-                await asyncio.sleep(0.01)
-        yield f"data: {json.dumps({'token': '', 'done': True, 'tool_used': intent})}\n\n"
+                await asyncio.sleep(0.008)
+        yield f"data: {json.dumps({'token': '', 'done': True, 'tool_used': tool})}\n\n"
 
-    # Handle greetings
-    if intent == "greeting":
-        if llm.client:
-            answer = llm.generate(SYSTEM_PROMPT, user_query,
-                                  "The user greeted you. Respond warmly as RIG Query Agent.")
+    try:
+        intent = route_query(user_query)
+        structured_answer = ""
+        pdf_url_stream = None
+
+        if intent == "greeting":
+            if llm.client:
+                structured_answer = llm.generate(SYSTEM_PROMPT, user_query,
+                    "The user greeted you. Respond warmly as RIG Query Agent.")
+            else:
+                structured_answer = (
+                    "Hello! I am the **RIG Query Agent** ⚡ — your AI-powered assistant for offshore rig operations.\n\n"
+                    "Ask me about equipment, work packs, shifts, procedures, or generate checklist PDFs."
+                )
+
+        elif intent == "equipment":
+            tool_result = tool_equipment_knowledge(user_query)
+            raw_context = tool_result.get("context", "")
+            sources = tool_result.get("sources", [])
+            if llm.client:
+                structured_answer = llm.generate(SYSTEM_PROMPT, user_query, raw_context)
+            else:
+                structured_answer = format_equipment_response(user_query, raw_context, sources)
+
+        elif intent == "work_pack":
+            tool_result = tool_work_pack_query(user_query, db)
+            if llm.client:
+                structured_answer = llm.generate(SYSTEM_PROMPT, user_query,
+                    f"Work Pack Data:\n{json.dumps(tool_result['data'], indent=2)}")
+            else:
+                structured_answer = format_work_pack_response(tool_result["data"])
+
+        elif intent == "shift":
+            tool_result = tool_shift_query(user_query, db)
+            if llm.client:
+                structured_answer = llm.generate(SYSTEM_PROMPT, user_query,
+                    f"Shift Data:\n{json.dumps(tool_result['data'], indent=2)}")
+            else:
+                structured_answer = format_shift_response(tool_result["data"])
+
+        elif intent == "procedure":
+            tool_result = tool_procedure_query(user_query, db)
+            if llm.client:
+                structured_answer = llm.generate(SYSTEM_PROMPT, user_query,
+                    f"Procedure Data:\n{json.dumps(tool_result['data'], indent=2)}")
+            else:
+                structured_answer = format_procedure_response(tool_result["data"])
+
+        elif intent == "checklist_search":
+            tool_result = tool_checklist_search(user_query, db)
+            if llm.client:
+                structured_answer = llm.generate(SYSTEM_PROMPT, user_query,
+                    f"Checklist Data:\n{json.dumps(tool_result['data'], indent=2)}")
+            else:
+                structured_answer = format_checklist_response(tool_result["data"])
+
+        elif intent == "checklist_pdf":
+            tool_result = tool_generate_checklist_pdf(user_query, db)
+            data = tool_result["data"]
+            if data.get("success"):
+                pdf_url_stream = f"/checklist/{data['filename']}"
+                structured_answer = (
+                    f"**Checklist Generated** ✓\n\n"
+                    f"| Field | Value |\n|-------|-------|\n"
+                    f"| **Checklist** | {data['checklist_name']} |\n"
+                    f"| **Equipment** | {data['equipment']} |\n"
+                    f"| **Items** | {data['item_count']} inspection points |\n\n"
+                    "Your PDF checklist is ready for download."
+                )
+            else:
+                structured_answer = f"Could not generate checklist: {data.get('message', 'Unknown error')}"
+
         else:
-            answer = ("Hello! I am the **RIG Query Agent** ⚡ — your AI-powered assistant for offshore rig operations.\n\n"
-                      "Ask me about equipment, work packs, shifts, procedures, or generate checklist PDFs.")
-        async for chunk in stream_text(answer):
+            # General: RAG + LLM — handles ANY query
+            try:
+                from rag import retrieve
+                rag_results = retrieve(user_query, top_k=3)
+                rag_context = "\n\n---\n\n".join(r["text"] for r in rag_results) if rag_results else ""
+            except Exception:
+                rag_context = ""
+            if llm.client:
+                structured_answer = llm.generate(SYSTEM_PROMPT, user_query, rag_context)
+            else:
+                structured_answer = rag_context or "Ask me about equipment, work packs, shifts, or procedures."
+
+        if pdf_url_stream:
+            yield f"data: {json.dumps({'token': '', 'pdf_url': pdf_url_stream, 'done': False})}\n\n"
+
+        async for chunk in stream_text(structured_answer or "No response generated.", intent):
             yield chunk
-        return
 
-    # Handle structured intents — get answer then stream it
-    structured_answer = None
-    pdf_url_stream = None
-
-    if intent == "equipment":
-        tool_result = tool_equipment_knowledge(user_query)
-        raw_context = tool_result.get("context", "")
-        sources = tool_result.get("sources", [])
-        if llm.client:
-            structured_answer = llm.generate(SYSTEM_PROMPT, user_query, raw_context)
-        else:
-            structured_answer = format_equipment_response(user_query, raw_context, sources)
-
-    elif intent == "work_pack":
-        tool_result = tool_work_pack_query(user_query, db)
-        if llm.client:
-            structured_answer = llm.generate(SYSTEM_PROMPT, user_query,
-                f"Work Pack Data:\n{json.dumps(tool_result['data'], indent=2)}")
-        else:
-            structured_answer = format_work_pack_response(tool_result["data"])
-
-    elif intent == "shift":
-        tool_result = tool_shift_query(user_query, db)
-        if llm.client:
-            structured_answer = llm.generate(SYSTEM_PROMPT, user_query,
-                f"Shift Data:\n{json.dumps(tool_result['data'], indent=2)}")
-        else:
-            structured_answer = format_shift_response(tool_result["data"])
-
-    elif intent == "procedure":
-        tool_result = tool_procedure_query(user_query, db)
-        if llm.client:
-            structured_answer = llm.generate(SYSTEM_PROMPT, user_query,
-                f"Procedure Data:\n{json.dumps(tool_result['data'], indent=2)}")
-        else:
-            structured_answer = format_procedure_response(tool_result["data"])
-
-    elif intent == "checklist_search":
-        tool_result = tool_checklist_search(user_query, db)
-        if llm.client:
-            structured_answer = llm.generate(SYSTEM_PROMPT, user_query,
-                f"Checklist Data:\n{json.dumps(tool_result['data'], indent=2)}")
-        else:
-            structured_answer = format_checklist_response(tool_result["data"])
-
-    elif intent == "checklist_pdf":
-        tool_result = tool_generate_checklist_pdf(user_query, db)
-        data = tool_result["data"]
-        if data.get("success"):
-            pdf_url_stream = f"/checklist/{data['filename']}"
-            structured_answer = (
-                f"**Checklist Generated** ✓\n\n"
-                f"| Field | Value |\n|-------|-------|\n"
-                f"| **Checklist** | {data['checklist_name']} |\n"
-                f"| **Equipment** | {data['equipment']} |\n"
-                f"| **Items** | {data['item_count']} inspection points |\n\n"
-                "Your PDF checklist is ready for download."
-            )
-        else:
-            structured_answer = f"Could not generate checklist: {data.get('message', 'Unknown error')}"
-
-    else:
-        # General: RAG + LLM
-        try:
-            from rag import retrieve
-            rag_results = retrieve(user_query, top_k=3)
-            rag_context = "\n\n---\n\n".join(r["text"] for r in rag_results) if rag_results else ""
-        except Exception:
-            rag_context = ""
-        if llm.client:
-            structured_answer = llm.generate(SYSTEM_PROMPT, user_query, rag_context)
-        else:
-            structured_answer = rag_context or "Ask me about equipment, work packs, shifts, or procedures."
-
-    if pdf_url_stream:
-        # Send pdf_url as metadata first
-        yield f"data: {json.dumps({'token': '', 'pdf_url': pdf_url_stream, 'done': False})}\n\n"
-
-    async for chunk in stream_text(structured_answer or ""):
-        yield chunk
+    except Exception as e:
+        yield f"data: {json.dumps({'token': f'Error: {str(e)}', 'done': True, 'tool_used': intent})}\n\n"
+    finally:
+        db.close()
 
 
 @app.get("/query/stream")
-async def stream_query(message: str, db: Session = Depends(get_db)):
-    """
-    Streaming version of /query using Server-Sent Events.
-    Frontend connects, receives tokens one-by-one for instant feedback.
-    """
+async def stream_query(message: str):
+    """Streaming SSE endpoint — no DB dependency injection needed, session handled internally."""
     if not message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
-    return FastAPIStream(
-        stream_llm_response(message.strip(), db),
+    return StreamingResponse(
+        stream_llm_response(message.strip()),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
+            "Access-Control-Allow-Origin": "*",
         }
     )
 
