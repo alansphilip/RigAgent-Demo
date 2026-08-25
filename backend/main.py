@@ -53,9 +53,28 @@ os.makedirs(PDF_OUTPUT_DIR, exist_ok=True)
 app.mount("/pdfs", StaticFiles(directory=PDF_OUTPUT_DIR), name="pdfs")
 
 
-# ─────────────────────────────────────────────────────────────
-# LLM Client (abstracted for easy provider swap)
-# ─────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────�
+# System prompt — defined BEFORE LLMClient so it's available at instantiation time
+SYSTEM_PROMPT = """You are RIG Query Agent, a professional AI assistant for offshore oil rig operations.
+You help rig operators, engineers, and supervisors by answering questions about equipment,
+work packs, procedures, shift schedules, and maintenance checklists.
+
+Guidelines:
+- Respond like a knowledgeable field engineer who is precise and professional
+- Format responses clearly using markdown (bold, bullet points, tables where appropriate)
+- For equipment questions, explain function, specifications, and operational context
+- For database queries (work packs, shifts, procedures), present the data clearly and summarize
+- Use technical terminology appropriate for the oil & gas industry
+- Keep responses concise but complete
+- Always prioritize safety-critical information
+- For general questions about offshore drilling, safety, or rig operations, answer them fully
+
+Response format example for data queries:
+**Current Active Work Packs** — 8 total
+• WP001 – Pump Maintenance *(High Priority)*
+• WP004 – Valve Inspection *(High Priority)*
+"""
+
 
 class LLMClient:
     """
@@ -72,7 +91,7 @@ class LLMClient:
         self.openai_base = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
         self.openai_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
         self.gemini_model = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
-        self._gemini = None
+        self._gemini_configured = False
         self._openai = None
         self.provider = "none"
 
@@ -81,10 +100,8 @@ class LLMClient:
             try:
                 import google.generativeai as genai
                 genai.configure(api_key=self.gemini_key)
-                self._gemini = genai.GenerativeModel(
-                    model_name=self.gemini_model,
-                    system_instruction=SYSTEM_PROMPT,
-                )
+                # Don't pass system_instruction here — pass it per-call in generate()
+                self._gemini_configured = True
                 self.provider = "gemini"
                 print(f"LLM: Using Google Gemini ({self.gemini_model})")
             except Exception as e:
@@ -106,15 +123,20 @@ class LLMClient:
     @property
     def client(self):
         """Compatibility shim — True if any LLM is available."""
-        return self._gemini or self._openai
+        return self._gemini_configured or self._openai
 
     def generate(self, system_prompt: str, user_message: str, context: str = "") -> str:
         """Generate a response using the configured LLM."""
         full_user = f"Context:\n{context}\n\nQuestion: {user_message}" if context else user_message
 
-        if self._gemini:
+        if self._gemini_configured:
             try:
-                resp = self._gemini.generate_content(full_user)
+                import google.generativeai as genai
+                model = genai.GenerativeModel(
+                    model_name=self.gemini_model,
+                    system_instruction=system_prompt,
+                )
+                resp = model.generate_content(full_user)
                 return resp.text
             except Exception as e:
                 print(f"Gemini generation error: {e}")
