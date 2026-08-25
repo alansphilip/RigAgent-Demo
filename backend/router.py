@@ -1,29 +1,29 @@
 """
 Query intent routing for the RIG Query Agent.
-Determines which tool to invoke based on the user's query.
+Soft routing: always tries to be helpful. Routes to specific tools when
+confident, falls back to general LLM+RAG for everything else.
 """
 import re
 
-
 # ─────────────────────────────────────────────────────────────
-# Explicit greeting words checked FIRST before anything else
+# Greeting — checked FIRST
 # ─────────────────────────────────────────────────────────────
-GREETING_WORDS = {"hi", "hello", "hey", "hola", "yo", "howdy", "greetings", "sup"}
+GREETING_WORDS = {"hi", "hello", "hey", "hola", "yo", "howdy", "greetings", "sup", "morning", "evening"}
 
 GREETING_PHRASES = [
     r"^(good\s*(morning|afternoon|evening|day))",
-    r"who are you",
-    r"what can you do",
-    r"what are you",
+    r"^who are you",
+    r"^what can you do",
+    r"^what are you",
     r"how can you help",
     r"what is this (app|tool|system|agent)",
-    r"^help$",       # only standalone "help"
+    r"^help$",
     r"^start$",
     r"^menu$",
 ]
 
 # ─────────────────────────────────────────────────────────────
-# Intent patterns (order matters — specific before generic)
+# Specific tool intent patterns
 # ─────────────────────────────────────────────────────────────
 INTENT_PATTERNS = {
     "checklist_pdf": [
@@ -40,31 +40,28 @@ INTENT_PATTERNS = {
         r"checklist.*for",
         r"view.*checklist",
         r"list.*checklist",
-        r"checklist",
+        r"\bchecklist\b",
     ],
     "shift": [
         r"current shift",
         r"who is.*shift",
         r"who worked",
         r"shift.*operator",
-        r"shift.*timing",
         r"previous shift",
         r"last shift",
         r"night shift",
         r"morning shift",
         r"afternoon shift",
         r"who.*on duty",
-        r"operator.*shift",
         r"\bshift\b",
     ],
     "procedure": [
-        r"procedure[s]?",
+        r"\bprocedure[s]?\b",
         r"\bp\d{3}\b",
         r"pending.*procedure",
         r"completed.*procedure",
         r"procedure.*status",
         r"show.*procedure",
-        r"in progress.*procedure",
     ],
     "work_pack": [
         r"work\s*pack[s]?",
@@ -74,102 +71,66 @@ INTENT_PATTERNS = {
         r"how many.*pack",
         r"list.*pack",
         r"pack.*status",
-        r"maintenance.*pack",
     ],
     "equipment": [
-        r"\bwhat is\b",
-        r"\bexplain\b",
-        r"\bhow does\b",
-        r"\bhow do\b",
-        r"\bwhat does\b",
-        r"\bdescribe\b",
-        r"\btell me about\b",
-        r"\bpurpose of\b",
-        r"\bspecification[s]?\b",
-        r"\bspecs?\b",
-        r"\boperate[s]?\b",
-        r"\boperation of\b",
-        r"\bmanual\b",
-        r"\bmud pump\b",
-        r"\bblowout preventer\b",
-        r"\bbop\b",
-        r"\btop drive\b",
-        r"\brotary table\b",
-        r"\bdrill pipe\b",
-        r"\bchoke manifold\b",
-        r"\bmud motor\b",
-        r"\bdraw works\b",
-        r"\bkelly\b",
-        r"\bhook\b",
-        r"\bswivel\b",
-        r"\baccumulator\b",
-        r"\bshale shaker\b",
-        r"\bdegasser\b",
-        r"\bdesander\b",
-        r"\bdesilter\b",
-        r"\bstandpipe\b",
-        r"\bheave compensator\b",
-        r"\biron roughneck\b",
-        r"\briser\b",
-        r"\bcatwalk\b",
-        r"\bcementing\b",
-        r"\bwireline\b",
-        r"\bwellhead\b",
-        r"\bchristmas tree\b",
-        r"\bsubsea\b",
-        r"\bmux pod\b",
-        r"\bdynamic positioning\b",
-        r"\b\bdp system\b",
-        r"\bmpd\b",
-        r"\bmanaged pressure\b",
-        r"\bequipment\b",
+        r"\bmud pump\b", r"\bblowout preventer\b", r"\bbop\b",
+        r"\btop drive\b", r"\brotary table\b", r"\bdrill pipe\b",
+        r"\bchoke manifold\b", r"\bmud motor\b", r"\bdraw works\b",
+        r"\bkelly\b", r"\bswivel\b", r"\baccumulator\b",
+        r"\bshale shaker\b", r"\bdegasser\b", r"\bdesander\b",
+        r"\bdesilter\b", r"\bstandpipe\b", r"\bheave compensator\b",
+        r"\biron roughneck\b", r"\briser\b", r"\bcatwalk\b",
+        r"\bcementing\b", r"\bwireline\b", r"\bwellhead\b",
+        r"\bchristmas tree\b", r"\bsubsea\b", r"\bmux pod\b",
+        r"\bdynamic positioning\b", r"\bmpd\b", r"\bmanaged pressure\b",
     ],
 }
+
+# Keywords that indicate a general knowledge/question query → route to LLM+RAG
+GENERAL_QUESTION_SIGNALS = [
+    r"\bwhat is\b", r"\bwhat are\b", r"\bwhat does\b", r"\bhow does\b",
+    r"\bhow do\b", r"\bwhy\b", r"\bwhen\b", r"\bexplain\b", r"\bdescribe\b",
+    r"\btell me\b", r"\bcan you\b", r"\bshould i\b", r"\badvise\b",
+    r"\brecommend\b", r"\bhelp me\b", r"\bwhat happens\b", r"\bhow to\b",
+]
 
 
 def route_query(user_query: str) -> str:
     """
-    Determine the intent of the user query and return the appropriate tool name.
+    Determine the intent of the user query.
 
     Returns one of:
         'checklist_pdf', 'checklist_search', 'shift', 'procedure',
         'work_pack', 'equipment', 'greeting', 'general'
+
+    'general' now means: use LLM + RAG context to answer ANY question.
     """
     query_lower = user_query.lower().strip()
     words = set(query_lower.split())
 
-    # ── 1. Greeting — check FIRST before any other matching ──────────────
-    # Direct single/few word greeting
+    # ── 1. Greeting check first ───────────────────────────────
     if words & GREETING_WORDS and len(words) <= 4:
         return "greeting"
-
-    # Greeting phrases
     for pattern in GREETING_PHRASES:
         if re.search(pattern, query_lower):
             return "greeting"
 
-    # ── 2. Score remaining intents ────────────────────────────────────────
+    # ── 2. Score specific tool intents ────────────────────────
     scores = {intent: 0 for intent in INTENT_PATTERNS}
-
     for intent, patterns in INTENT_PATTERNS.items():
         for pattern in patterns:
             if re.search(pattern, query_lower):
                 scores[intent] += 1
 
-    # Priority order for tie-breaking
     priority_order = [
-        "checklist_pdf",
-        "checklist_search",
-        "shift",
-        "procedure",
-        "work_pack",
-        "equipment",
+        "checklist_pdf", "checklist_search",
+        "shift", "procedure", "work_pack", "equipment",
     ]
-
     best_intent = max(priority_order, key=lambda i: scores[i])
 
-    # ── 3. No intent matched → general ────────────────────────────────────
-    if scores[best_intent] == 0:
-        return "general"
+    # ── 3. High-confidence specific tool match ────────────────
+    if scores[best_intent] >= 1:
+        return best_intent
 
-    return best_intent
+    # ── 4. Everything else → general (LLM + RAG handles it) ──
+    return "general"

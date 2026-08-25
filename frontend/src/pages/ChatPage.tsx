@@ -189,39 +189,88 @@ export default function ChatPage() {
     setInput('')
     setIsLoading(true)
 
+    const assistantId = crypto.randomUUID()
+    let fullText = ''
+    let pdfUrl: string | undefined
+    let toolUsed: string | undefined
+    let streamStarted = false
+
     try {
       const apiUrl = import.meta.env.VITE_API_URL || ''
-      const res = await fetch(`${apiUrl}/query`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: query.trim() }),
-      })
+      const encodedMsg = encodeURIComponent(query.trim())
 
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      // Try streaming first (SSE)
+      const res = await fetch(`${apiUrl}/query/stream?message=${encodedMsg}`)
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`)
 
-      const data: QueryResponse = await res.json()
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
 
-      // Save query to localStorage for Recent Queries page
-      saveRecentQuery(query.trim(), data.tool_used || 'general')
-
-      const assistantMsg: ChatMessage = {
-        id: crypto.randomUUID(),
+      // Add empty assistant message immediately so user sees it start
+      setMessages(prev => [...prev, {
+        id: assistantId,
         role: 'assistant',
-        content: data.answer,
+        content: '',
         timestamp: new Date(),
-        pdfUrl: data.pdf_url || undefined,
-        toolUsed: data.tool_used || undefined,
-        sources: data.sources || undefined,
+      }])
+      setIsLoading(false)
+      streamStarted = true
+
+      let buffer = ''
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          try {
+            const parsed = JSON.parse(line.slice(6))
+            if (parsed.pdf_url) pdfUrl = parsed.pdf_url
+            if (parsed.tool_used) toolUsed = parsed.tool_used
+            if (parsed.token) {
+              fullText += parsed.token
+              setMessages(prev => prev.map(m =>
+                m.id === assistantId
+                  ? { ...m, content: fullText, pdfUrl, toolUsed }
+                  : m
+              ))
+            }
+            if (parsed.done) {
+              if (parsed.tool_used) toolUsed = parsed.tool_used
+              setMessages(prev => prev.map(m =>
+                m.id === assistantId
+                  ? { ...m, content: fullText.trim(), pdfUrl, toolUsed }
+                  : m
+              ))
+            }
+          } catch { /* skip malformed SSE line */ }
+        }
       }
-      setMessages(prev => [...prev, assistantMsg])
+
+      saveRecentQuery(query.trim(), toolUsed || 'general')
+
     } catch (err) {
-      const errorMsg: ChatMessage = {
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        content: `**Connection Error**\n\nUnable to reach the RIG Query Agent backend. Please ensure the backend server is running at \`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}\`.`,
-        timestamp: new Date(),
+      if (streamStarted) {
+        // Already showing partial — show error appended
+        setMessages(prev => prev.map(m =>
+          m.id === assistantId
+            ? { ...m, content: fullText || '**Connection lost during streaming.**' }
+            : m
+        ))
+      } else {
+        setIsLoading(false)
+        const errorMsg: ChatMessage = {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: `**Connection Error**\n\nUnable to reach the RIG Query Agent backend at \`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}\`.`,
+          timestamp: new Date(),
+        }
+        setMessages(prev => [...prev, errorMsg])
       }
-      setMessages(prev => [...prev, errorMsg])
     } finally {
       setIsLoading(false)
       inputRef.current?.focus()
