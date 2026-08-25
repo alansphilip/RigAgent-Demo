@@ -488,17 +488,7 @@ async def process_query(request: QueryRequest, db: Session = Depends(get_db)):
             context = rag_context if rag_context else ""
             answer = llm.generate(SYSTEM_PROMPT, user_query, context)
         else:
-            if rag_context:
-                answer = rag_context
-            else:
-                answer = (
-                    "I can help with offshore rig operations. Try asking me:\n\n"
-                    "- **Equipment:** *\"What is a Mud Pump?\"*, *\"Explain BOP\"*\n"
-                    "- **Work Packs:** *\"Show active work packs\"*, *\"Status of WP001\"*\n"
-                    "- **Shifts:** *\"Who is on duty?\"*, *\"Show night shifts\"*\n"
-                    "- **Procedures:** *\"List completed procedures\"*\n"
-                    "- **Checklists:** *\"Generate Mud Pump checklist PDF\"*"
-                )
+            answer = "I can help with offshore rig operations. Please try:\n\n- **Equipment info:** *\"What is a Mud Pump?\"*, *\"Explain BOP\"*\n- **Work packs:** *\"Show active work packs\"*, *\"Status of WP001\"*\n- **Shifts:** *\"Who is on duty?\"*, *\"Show current shift\"*\n- **Procedures:** *\"List completed procedures\"*\n- **Checklists:** *\"Generate Mud Pump checklist PDF\"*\n\n> Add a GEMINI_API_KEY in Render environment to enable AI responses for any question."
 
     return QueryResponse(
         answer=answer,
@@ -748,7 +738,7 @@ async def stream_llm_response(user_query: str):
             if llm.client:
                 structured_answer = llm.generate(SYSTEM_PROMPT, user_query, rag_context)
             else:
-                structured_answer = rag_context or "Ask me about equipment, work packs, shifts, or procedures."
+                structured_answer = "I can help with offshore rig operations. Please try:\n\n- **Equipment info:** *\"What is a Mud Pump?\"*, *\"Explain BOP\"*\n- **Work packs:** *\"Show active work packs\"*, *\"Status of WP001\"*\n- **Shifts:** *\"Who is on duty?\"*, *\"Show current shift\"*\n- **Procedures:** *\"List completed procedures\"*\n- **Checklists:** *\"Generate Mud Pump checklist PDF\"*\n\n> Add a GEMINI_API_KEY in Render environment to enable AI responses for any question."
 
         if pdf_url_stream:
             yield f"data: {json.dumps({'token': '', 'pdf_url': pdf_url_stream, 'done': False})}\n\n"
