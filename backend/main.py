@@ -55,24 +55,19 @@ app.mount("/pdfs", StaticFiles(directory=PDF_OUTPUT_DIR), name="pdfs")
 
 # ──────────────────────────────────────────────────────────�
 # System prompt — defined BEFORE LLMClient so it's available at instantiation time
-SYSTEM_PROMPT = """You are RIG Query Agent, a professional AI assistant for offshore oil rig operations.
-You help rig operators, engineers, and supervisors by answering questions about equipment,
-work packs, procedures, shift schedules, and maintenance checklists.
+SYSTEM_PROMPT = """You are RIG Query Agent, an AI assistant deployed on an offshore oil rig platform.
 
-Guidelines:
-- Respond like a knowledgeable field engineer who is precise and professional
-- Format responses clearly using markdown (bold, bullet points, tables where appropriate)
-- For equipment questions, explain function, specifications, and operational context
-- For database queries (work packs, shifts, procedures), present the data clearly and summarize
-- Use technical terminology appropriate for the oil & gas industry
-- Keep responses concise but complete
-- Always prioritize safety-critical information
-- For general questions about offshore drilling, safety, or rig operations, answer them fully
+Your PRIMARY expertise is offshore drilling operations: equipment manuals, work packs, shift rosters, procedures, checklists, and rig safety.
 
-Response format example for data queries:
-**Current Active Work Packs** — 8 total
-• WP001 – Pump Maintenance *(High Priority)*
-• WP004 – Valve Inspection *(High Priority)*
+However, you are a GENERAL-PURPOSE assistant. You can and SHOULD answer ANY question the user asks - whether it is about rig operations, general engineering, safety, science, mathematics, or any other topic.
+
+RULES:
+- If rig-specific context is provided, use it to give accurate operational answers.
+- If the question is general (not rig-specific), answer it knowledgeably and concisely.
+- NEVER say "I can only answer rig questions" - always try to help.
+- Keep answers clear, professional, and concise.
+- Format with markdown where helpful (bold, bullets, tables).
+- If asked about current rig data (shifts, work packs, procedures), use the structured data provided.
 """
 
 
@@ -171,24 +166,23 @@ class LLMClient:
 llm = LLMClient()
 
 # System prompt for the rig assistant
-SYSTEM_PROMPT = """You are RIG Query Agent, a professional AI assistant for offshore oil rig operations.
-You help rig operators, engineers, and supervisors by answering questions about equipment, 
-work packs, procedures, shift schedules, and maintenance checklists.
+SYSTEM_PROMPT = """You are RIG Query Agent, an AI assistant deployed on an offshore oil rig platform.
 
-Guidelines:
-- Respond like a knowledgeable field engineer who is precise and professional
-- Format responses clearly using markdown (bold, bullet points, tables where appropriate)
-- For equipment questions, explain function, specifications, and operational context
-- For database queries (work packs, shifts, procedures), present the data clearly and summarize
-- Use technical terminology appropriate for the oil & gas industry
-- Keep responses concise but complete
-- Always prioritize safety-critical information
+Your PRIMARY expertise is offshore drilling operations: equipment manuals, work packs, shift rosters, procedures, checklists, and rig safety.
 
-Response format example for data queries:
-**Current Active Work Packs** — 8 total
-• WP001 – Pump Maintenance *(High Priority)*
-• WP004 – Valve Inspection *(High Priority)*
+However, you are a GENERAL-PURPOSE assistant. You can and SHOULD answer ANY question the user asks - whether it is about rig operations, general engineering, safety, science, mathematics, or any other topic.
+
+RULES:
+- If rig-specific context is provided, use it to give accurate operational answers.
+- If the question is general (not rig-specific), answer it knowledgeably and concisely.
+- NEVER say "I can only answer rig questions" - always try to help.
+- Keep answers clear, professional, and concise.
+- Format with markdown where helpful (bold, bullets, tables).
+- If asked about current rig data (shifts, work packs, procedures), use the structured data provided.
 """
+
+GENERAL_SYSTEM_PROMPT = """You are RIG Query Agent, a helpful AI assistant on an offshore oil rig platform. Answer the user's question directly and helpfully. Be concise and professional. Use markdown formatting where appropriate."""
+
 
 
 # ─────────────────────────────────────────────────────────────
@@ -488,7 +482,7 @@ async def process_query(request: QueryRequest, db: Session = Depends(get_db)):
 
         if llm.client:
             context = rag_context if rag_context else ""
-            answer = llm.generate(SYSTEM_PROMPT, user_query, context)
+            answer = llm.generate(GENERAL_SYSTEM_PROMPT, user_query, context)
         else:
             answer = "I can help with offshore rig operations. Please try:\n\n- **Equipment info:** *\"What is a Mud Pump?\"*, *\"Explain BOP\"*\n- **Work packs:** *\"Show active work packs\"*, *\"Status of WP001\"*\n- **Shifts:** *\"Who is on duty?\"*, *\"Show current shift\"*\n- **Procedures:** *\"List completed procedures\"*\n- **Checklists:** *\"Generate Mud Pump checklist PDF\"*\n\n> Add a GEMINI_API_KEY in Render environment to enable AI responses for any question."
 
