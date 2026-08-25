@@ -176,6 +176,19 @@ export default function ChatPage() {
     }
   }, [location.state])
 
+  // Ping backend until it responds (handles Render cold starts)
+  const waitForBackend = async (apiUrl: string, maxWaitMs = 60000): Promise<boolean> => {
+    const start = Date.now()
+    while (Date.now() - start < maxWaitMs) {
+      try {
+        const r = await fetch(`${apiUrl}/ping`, { signal: AbortSignal.timeout(5000) })
+        if (r.ok) return true
+      } catch { /* still waking up */ }
+      await new Promise(res => setTimeout(res, 2000))
+    }
+    return false
+  }
+
   const sendMessage = async (query: string) => {
     if (!query.trim() || isLoading) return
 
@@ -190,91 +203,118 @@ export default function ChatPage() {
     setIsLoading(true)
 
     const assistantId = crypto.randomUUID()
-    let fullText = ''
-    let pdfUrl: string | undefined
-    let toolUsed: string | undefined
-    let streamStarted = false
+    const apiUrl = import.meta.env.VITE_API_URL || ''
 
-    try {
-      const apiUrl = import.meta.env.VITE_API_URL || ''
-      const encodedMsg = encodeURIComponent(query.trim())
+    // Show "waking up" placeholder immediately
+    setMessages(prev => [...prev, {
+      id: assistantId,
+      role: 'assistant',
+      content: '_Connecting to backend…_',
+      timestamp: new Date(),
+    }])
 
-      // Try streaming first (SSE)
-      const res = await fetch(`${apiUrl}/query/stream?message=${encodedMsg}`)
-      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`)
-
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder()
-
-      // Add empty assistant message immediately so user sees it start
-      setMessages(prev => [...prev, {
-        id: assistantId,
-        role: 'assistant',
-        content: '',
-        timestamp: new Date(),
-      }])
-      setIsLoading(false)
-      streamStarted = true
-
-      let buffer = ''
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n')
-        buffer = lines.pop() || ''
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue
-          try {
-            const parsed = JSON.parse(line.slice(6))
-            if (parsed.pdf_url) pdfUrl = parsed.pdf_url
-            if (parsed.tool_used) toolUsed = parsed.tool_used
-            if (parsed.token) {
-              fullText += parsed.token
-              setMessages(prev => prev.map(m =>
-                m.id === assistantId
-                  ? { ...m, content: fullText, pdfUrl, toolUsed }
-                  : m
-              ))
-            }
-            if (parsed.done) {
-              if (parsed.tool_used) toolUsed = parsed.tool_used
-              setMessages(prev => prev.map(m =>
-                m.id === assistantId
-                  ? { ...m, content: fullText.trim(), pdfUrl, toolUsed }
-                  : m
-              ))
-            }
-          } catch { /* skip malformed SSE line */ }
-        }
-      }
-
-      saveRecentQuery(query.trim(), toolUsed || 'general')
-
-    } catch (err) {
-      if (streamStarted) {
-        // Already showing partial — show error appended
-        setMessages(prev => prev.map(m =>
-          m.id === assistantId
-            ? { ...m, content: fullText || '**Connection lost during streaming.**' }
-            : m
-        ))
-      } else {
-        setIsLoading(false)
-        const errorMsg: ChatMessage = {
-          id: crypto.randomUUID(),
-          role: 'assistant',
-          content: `**Connection Error**\n\nUnable to reach the RIG Query Agent backend at \`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}\`.`,
-          timestamp: new Date(),
-        }
-        setMessages(prev => [...prev, errorMsg])
-      }
-    } finally {
+    // Step 1: Wake up backend if sleeping
+    const alive = await waitForBackend(apiUrl)
+    if (!alive) {
+      setMessages(prev => prev.map(m =>
+        m.id === assistantId
+          ? { ...m, content: '**Backend Unavailable**\n\nThe server did not respond within 60 seconds. Please try again in a moment.' }
+          : m
+      ))
       setIsLoading(false)
       inputRef.current?.focus()
+      return
     }
+
+    // Step 2: Try streaming (SSE)
+    let streamSucceeded = false
+    try {
+      const encodedMsg = encodeURIComponent(query.trim())
+      const res = await fetch(`${apiUrl}/query/stream?message=${encodedMsg}`, {
+        signal: AbortSignal.timeout(30000),
+      })
+
+      if (res.ok && res.body) {
+        const reader = res.body.getReader()
+        const decoder = new TextDecoder()
+        let fullText = ''
+        let pdfUrl: string | undefined
+        let toolUsed: string | undefined
+        let buffer = ''
+        streamSucceeded = true
+
+        // Clear placeholder
+        setMessages(prev => prev.map(m =>
+          m.id === assistantId ? { ...m, content: '' } : m
+        ))
+
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split('\n')
+          buffer = lines.pop() || ''
+
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue
+            try {
+              const parsed = JSON.parse(line.slice(6))
+              if (parsed.pdf_url) pdfUrl = parsed.pdf_url
+              if (parsed.tool_used) toolUsed = parsed.tool_used
+              if (parsed.token) {
+                fullText += parsed.token
+                setMessages(prev => prev.map(m =>
+                  m.id === assistantId ? { ...m, content: fullText, pdfUrl, toolUsed } : m
+                ))
+              }
+              if (parsed.done && parsed.tool_used) toolUsed = parsed.tool_used
+            } catch { /* skip bad SSE line */ }
+          }
+        }
+
+        // Finalize
+        setMessages(prev => prev.map(m =>
+          m.id === assistantId ? { ...m, content: fullText.trim(), pdfUrl, toolUsed } : m
+        ))
+        saveRecentQuery(query.trim(), toolUsed || 'general')
+      }
+    } catch { /* streaming failed — fall through to POST */ }
+
+    // Step 3: Fallback to regular POST if streaming didn't work
+    if (!streamSucceeded) {
+      try {
+        const res = await fetch(`${apiUrl}/query`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: query.trim() }),
+          signal: AbortSignal.timeout(30000),
+        })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const data = await res.json()
+        setMessages(prev => prev.map(m =>
+          m.id === assistantId
+            ? {
+                ...m,
+                content: data.answer,
+                pdfUrl: data.pdf_url || undefined,
+                toolUsed: data.tool_used || undefined,
+                sources: data.sources || undefined,
+              }
+            : m
+        ))
+        saveRecentQuery(query.trim(), data.tool_used || 'general')
+      } catch {
+        setMessages(prev => prev.map(m =>
+          m.id === assistantId
+            ? { ...m, content: '**Request Failed**\n\nThe backend is online but the request could not be completed. Please try again.' }
+            : m
+        ))
+      }
+    }
+
+    setIsLoading(false)
+    inputRef.current?.focus()
   }
 
   const handleSubmit = (e: React.FormEvent) => {
