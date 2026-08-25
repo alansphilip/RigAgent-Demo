@@ -480,7 +480,9 @@ async def process_query(request: QueryRequest, db: Session = Depends(get_db)):
         try:
             from rag import retrieve
             rag_results = retrieve(user_query, top_k=3)
-            rag_context = "\n\n---\n\n".join(r["text"] for r in rag_results) if rag_results else ""
+            # Only use RAG context if it has a decent relevance score
+            relevant = [r for r in rag_results if r.get("score", 0) > 0.1] if rag_results else []
+            rag_context = "\n\n---\n\n".join(r["text"] for r in relevant) if relevant else ""
         except Exception:
             rag_context = ""
 
