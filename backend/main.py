@@ -411,23 +411,19 @@ async def process_query(request: QueryRequest, db: Session = Depends(get_db)):
 
     elif intent == "work_pack":
         tool_result = tool_work_pack_query(user_query, db)
-        formatted_data = format_work_pack_response(tool_result["data"])
-        answer = llm.generate(SYSTEM_PROMPT, user_query, formatted_data) if llm.client else formatted_data
+        answer = format_work_pack_response(tool_result["data"])
 
     elif intent == "shift":
         tool_result = tool_shift_query(user_query, db)
-        formatted_data = format_shift_response(tool_result["data"])
-        answer = llm.generate(SYSTEM_PROMPT, user_query, formatted_data) if llm.client else formatted_data
+        answer = format_shift_response(tool_result["data"])
 
     elif intent == "procedure":
         tool_result = tool_procedure_query(user_query, db)
-        formatted_data = format_procedure_response(tool_result["data"])
-        answer = llm.generate(SYSTEM_PROMPT, user_query, formatted_data) if llm.client else formatted_data
+        answer = format_procedure_response(tool_result["data"])
 
     elif intent == "checklist_search":
         tool_result = tool_checklist_search(user_query, db)
-        formatted_data = format_checklist_response(tool_result["data"])
-        answer = llm.generate(SYSTEM_PROMPT, user_query, formatted_data) if llm.client else formatted_data
+        answer = format_checklist_response(tool_result["data"])
 
     elif intent == "checklist_pdf":
         tool_result = tool_generate_checklist_pdf(user_query, db)
@@ -670,23 +666,19 @@ async def stream_llm_response(user_query: str):
 
         elif intent == "work_pack":
             tool_result = tool_work_pack_query(user_query, db)
-            formatted_data = format_work_pack_response(tool_result["data"])
-            structured_answer = llm.generate(SYSTEM_PROMPT, user_query, formatted_data) if llm.client else formatted_data
+            structured_answer = format_work_pack_response(tool_result["data"])
 
         elif intent == "shift":
             tool_result = tool_shift_query(user_query, db)
-            formatted_data = format_shift_response(tool_result["data"])
-            structured_answer = llm.generate(SYSTEM_PROMPT, user_query, formatted_data) if llm.client else formatted_data
+            structured_answer = format_shift_response(tool_result["data"])
 
         elif intent == "procedure":
             tool_result = tool_procedure_query(user_query, db)
-            formatted_data = format_procedure_response(tool_result["data"])
-            structured_answer = llm.generate(SYSTEM_PROMPT, user_query, formatted_data) if llm.client else formatted_data
+            structured_answer = format_procedure_response(tool_result["data"])
 
         elif intent == "checklist_search":
             tool_result = tool_checklist_search(user_query, db)
-            formatted_data = format_checklist_response(tool_result["data"])
-            structured_answer = llm.generate(SYSTEM_PROMPT, user_query, formatted_data) if llm.client else formatted_data
+            structured_answer = format_checklist_response(tool_result["data"])
 
         elif intent == "checklist_pdf":
             tool_result = tool_generate_checklist_pdf(user_query, db)
