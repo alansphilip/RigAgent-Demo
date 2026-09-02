@@ -424,6 +424,11 @@ async def process_query(request: QueryRequest, db: Session = Depends(get_db)):
     elif intent == "checklist_search":
         tool_result = tool_checklist_search(user_query, db)
         answer = format_checklist_response(tool_result["data"])
+        # Auto-generate PDF so Download button always appears
+        if tool_result["data"].get("found"):
+            _pdf = tool_generate_checklist_pdf(user_query, db)
+            if _pdf["data"].get("success"):
+                pdf_url = f"/checklist/{_pdf['data']['filename']}"
 
     elif intent == "checklist_pdf":
         tool_result = tool_generate_checklist_pdf(user_query, db)
@@ -679,6 +684,11 @@ async def stream_llm_response(user_query: str):
         elif intent == "checklist_search":
             tool_result = tool_checklist_search(user_query, db)
             structured_answer = format_checklist_response(tool_result["data"])
+            # Auto-generate PDF so Download button always appears
+            if tool_result["data"].get("found"):
+                _pdf = tool_generate_checklist_pdf(user_query, db)
+                if _pdf["data"].get("success"):
+                    pdf_url_stream = f"/checklist/{_pdf['data']['filename']}"
 
         elif intent == "checklist_pdf":
             tool_result = tool_generate_checklist_pdf(user_query, db)
